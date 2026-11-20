@@ -8,6 +8,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname as pathDirname, join as pathJoin } from "node:path"
+import { signalNewNym } from "../olliecode-tor.js"
+import { recycleTorPool } from "../olliecode-socks-dispatcher.js"
 
 // olliEcode auto-rotate on opencode.ai quota refusal.
 //
@@ -44,11 +46,14 @@ const MAX_PER_HOUR = Number(process.env.OLLIECODE_AUTO_ROTATE_MAX_PER_HOUR ?? "3
 const WARP_CANDIDATES = [
   "C:\\Program Files\\Cloudflare\\Cloudflare WARP\\warp-cli.exe",
   "C:\\Program Files (x86)\\Cloudflare\\Cloudflare WARP\\warp-cli.exe",
+  "/usr/bin/warp-cli",
+  "/usr/local/bin/warp-cli",
 ]
 
 function resolveWarpCli(): string | undefined {
   for (const c of WARP_CANDIDATES) if (existsSync(c)) return c
-  return undefined
+  const onPath = Bun.which("warp-cli")
+  return onPath ?? undefined
 }
 
 function fingerprintPath(): string {
@@ -96,30 +101,28 @@ function allowRotation(): boolean {
 
 function doRotation(warp: string | undefined): Promise<void> {
   if (rotationInFlight) return rotationInFlight
-  rotationInFlight = new Promise<void>((resolve) => {
+  rotationInFlight = (async () => {
     rotationHistory.push(Date.now())
-    // Fingerprint first (cheap, always safe) then WARP (slower, system-
-    // level). Order doesn't matter for correctness but writing the file
-    // first means that if WARP hangs we still stamped the new identifier.
+    // Fingerprint first (cheap, always safe) then the egress identity.
+    // WARP when installed; Tor NEWNYM otherwise — a new circuit gives the
+    // next request a fresh exit IP, which is the per-IP bucket reset.
     rotateFingerprintFile()
-    if (!warp) {
-      resolve()
-      return
-    }
-    const run = (args: string[]) =>
-      new Promise<void>((done) => {
-        const c = spawn(warp, args, { stdio: "ignore", windowsHide: true })
-        c.on("exit", () => done())
-        c.on("error", () => done())
-        setTimeout(done, 4000)
-      })
-    ;(async () => {
+    if (warp) {
+      const run = (args: string[]) =>
+        new Promise<void>((done) => {
+          const c = spawn(warp, args, { stdio: "ignore", windowsHide: true })
+          c.on("exit", () => done())
+          c.on("error", () => done())
+          setTimeout(done, 4000)
+        })
       await run(["--accept-tos", "registration", "delete"])
       await run(["--accept-tos", "registration", "new"])
       await new Promise((r) => setTimeout(r, 1500))
-      resolve()
-    })()
-  }).finally(() => {
+      return
+    }
+    await signalNewNym()
+    await recycleTorPool()
+  })().finally(() => {
     rotationInFlight = undefined
   })
   return rotationInFlight
