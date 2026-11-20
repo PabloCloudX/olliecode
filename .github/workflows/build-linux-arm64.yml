@@ -1,0 +1,39 @@
+name: build-linux-arm64
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install
+        run: bun install
+
+      - name: Build CLI
+        env:
+          OPENCODE_TARGET: linux-arm64
+        run: bun --cwd packages/cli build
+
+      - name: Verify binary
+        run: |
+          file packages/cli/dist/cli-linux-arm64/bin/opencode
+          packages/cli/dist/cli-linux-arm64/bin/opencode --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: olliecode-cli-linux-arm64
+          path: packages/cli/dist/cli-linux-arm64
+          compression-level: 9
+          if-no-files-found: error
